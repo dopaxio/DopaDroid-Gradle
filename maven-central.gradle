@@ -1,0 +1,213 @@
+def localPropsFile = file("gradle-local.properties")
+if (localPropsFile.exists()) {
+    def localProps = new Properties()
+    localPropsFile.withInputStream { localProps.load(it) }
+    localProps.each { k, v ->
+        if (!project.hasProperty(k)) {
+            project.ext.set(k.toString(), v)
+        }
+    }
+}
+
+def centralVersion = "0.0.1"
+def centralName = "dev.dopadroid.tools.build:gradle:${centralVersion}"
+def gradleArtifactId = "gradle"
+def pluginMarkerArtifactId = "dev.dopadroid.application.gradle.plugin"
+def projectUrl = "https://github.com/dopaxio/DopaDroid"
+def scmUrl = "https://github.com/dopaxio/DopaDroid-Gradle"
+def pomDescription = "DopaDroid Gradle Plugin, an enhanced Android Gradle Plugin for building Android applications, with added support for reassembling Smali files."
+
+tasks.named("javadoc").configure {
+    failOnError = false
+}
+
+// Placeholder sources.jar for Maven Central only. Keep the real sourcesJar task
+// for local builds, but never attach it to the Central publication.
+def centralSourcesPlaceholder = tasks.register('centralSourcesPlaceholder', Jar) {
+    archiveClassifier.set('sources')
+    archiveFileName.set('central-sources-placeholder.jar')
+    destinationDirectory.set(layout.buildDirectory.dir('central-placeholder'))
+    from(layout.projectDirectory.dir('central-placeholder')) {
+        include 'README.md'
+    }
+}
+
+afterEvaluate {
+    publishing.publications.withType(MavenPublication).configureEach { pub ->
+        if (pub.artifactId != gradleArtifactId && pub.artifactId != pluginMarkerArtifactId) {
+            return
+        }
+        if (pub.artifactId == gradleArtifactId) {
+            def sourcesToRemove = pub.artifacts.findAll { it.classifier == 'sources' }
+            sourcesToRemove.each { pub.artifacts.remove(it) }
+            pub.artifact(centralSourcesPlaceholder)
+            pub.artifact(tasks.named("javadocJar"))
+        }
+        pub.pom.withXml {
+            def root = asNode()
+            ["description", "url", "name", "developers", "scm"].each { tag ->
+                def nodes = root[tag]
+                if (nodes) {
+                    nodes.each { it.parent().remove(it) }
+                }
+            }
+            if (!root.licenses || root.licenses.isEmpty()) {
+                def license = root.appendNode("licenses").appendNode("license")
+                license.appendNode("name", "The Apache Software License, Version 2.0")
+                license.appendNode("url", "http://www.apache.org/licenses/LICENSE-2.0.txt")
+                license.appendNode("distribution", "repo")
+            }
+            root.appendNode("name", "DopaDroid Gradle Plugin")
+            root.appendNode("description", pomDescription)
+            root.appendNode("url", projectUrl)
+            def developer = root.appendNode("developers").appendNode("developer")
+            developer.appendNode("name", "DopaDroid")
+            developer.appendNode("organization", "DopaDroid")
+            developer.appendNode("organizationUrl", projectUrl)
+            def scm = root.appendNode("scm")
+            scm.appendNode("connection", "scm:git:https://github.com/dopaxio/DopaDroid-Gradle.git")
+            scm.appendNode("developerConnection", "scm:git:ssh://git@github.com/dopaxio/DopaDroid-Gradle.git")
+            scm.appendNode("url", scmUrl)
+        }
+    }
+}
+
+tasks.register("stageMavenCentralBundle") {
+    group = "publishing"
+    description = "Sign and zip only the DopaDroid gradle-core artifacts for Maven Central."
+    dependsOn "publish"
+    def zipPath = layout.buildDirectory.file("central-bundle/dev.dopadroid.tools.build-gradle-0.0.1.zip")
+    outputs.file(zipPath)
+    doLast {
+        def repoRoot = new File(rootProject.ext.androidHostOut, "repo")
+        def stageDir = layout.buildDirectory.dir("central-staging").get().asFile
+        delete stageDir
+        stageDir.mkdirs()
+        def paths = [
+                "dev/dopadroid/tools/build/gradle/0.0.1",
+                "dev/dopadroid/application/dev.dopadroid.application.gradle.plugin/0.0.1"
+        ]
+        paths.each { rel ->
+            def src = new File(repoRoot, rel)
+            if (!src.exists()) {
+                throw new GradleException("找不到产物目录: ${src}")
+            }
+            def dest = new File(stageDir, rel)
+            dest.parentFile.mkdirs()
+            ant.copy(todir: dest) {
+                fileset(dir: src) {
+                    exclude(name: "maven-metadata*")
+                    exclude(name: "*.md5")
+                    exclude(name: "*.sha1")
+                    exclude(name: "*.sha256")
+                    exclude(name: "*.sha512")
+                    exclude(name: "*.asc")
+                }
+            }
+        }
+        def publishedSources = new File(stageDir, "dev/dopadroid/tools/build/gradle/0.0.1/gradle-0.0.1-sources.jar")
+        if (!publishedSources.exists()) {
+            throw new GradleException("缺少 sources.jar: ${publishedSources}")
+        }
+        def sourcesZip = new java.util.zip.ZipFile(publishedSources)
+        try {
+            def names = sourcesZip.entries().collect { it.name }
+            def allowed = ["META-INF/", "META-INF/MANIFEST.MF", "README.md"] as Set
+            def unexpected = names.findAll { name -> !allowed.contains(name) && !name.endsWith("/") }
+            if (!names.contains("README.md")) {
+                throw new GradleException("sources.jar 缺少 README.md")
+            }
+            if (unexpected) {
+                throw new GradleException("sources.jar 含有不应发布的文件: ${unexpected}")
+            }
+        } finally {
+            sourcesZip.close()
+        }
+        def keyName = project.findProperty("signing.gnupg.keyName") ?: System.getenv("SIGNING_KEY_NAME")
+        if (!keyName) {
+            throw new GradleException("请设置 signing.gnupg.keyName")
+        }
+        def passphrase = project.findProperty("signing.gnupg.passphrase") ?: System.getenv("GPG_PASSPHRASE")
+        stageDir.eachFileRecurse { f ->
+            if (!f.isFile()) return
+            if (f.name.endsWith(".md5") || f.name.endsWith(".sha1") || f.name.endsWith(".sha256") || f.name.endsWith(".sha512") || f.name.endsWith(".asc")) return
+            def gpgCmd = ["gpg", "--armor", "--detach-sign", "--batch", "--yes", "--default-key", keyName]
+            if (passphrase) {
+                gpgCmd.addAll(["--pinentry-mode", "loopback", "--passphrase", passphrase])
+            }
+            gpgCmd.add(f.absolutePath)
+            def proc = gpgCmd.execute()
+            def err = new StringBuilder()
+            proc.consumeProcessErrorStream(err)
+            if (proc.waitFor() != 0) {
+                throw new GradleException("GPG 签名失败: ${f}\n${err}")
+            }
+        }
+        stageDir.eachFileRecurse { f ->
+            if (!f.isFile()) return
+            if (f.name.endsWith(".md5") || f.name.endsWith(".sha1") || f.name.endsWith(".sha256") || f.name.endsWith(".sha512")) return
+            def md5 = java.security.MessageDigest.getInstance("MD5")
+            def sha1 = java.security.MessageDigest.getInstance("SHA-1")
+            f.eachByte(8192) { buf, n ->
+                md5.update(buf, 0, n)
+                sha1.update(buf, 0, n)
+            }
+            def hex = { bytes -> bytes.collect { String.format("%02x", it & 0xff) }.join() }
+            new File(f.parentFile, f.name + ".md5").text = hex(md5.digest()) + "\n"
+            new File(f.parentFile, f.name + ".sha1").text = hex(sha1.digest()) + "\n"
+        }
+        def zip = zipPath.get().asFile
+        zip.parentFile.mkdirs()
+        if (zip.exists()) {
+            zip.delete()
+        }
+        ant.zip(destfile: zip, basedir: stageDir)
+        logger.lifecycle("已生成 bundle: ${zip}")
+    }
+}
+
+def uploadBundle(boolean automatic) {
+    def bundleName = "dev.dopadroid.tools.build-gradle-0.0.1"
+    def componentName = "dev.dopadroid.tools.build:gradle:0.0.1"
+    def zip = layout.buildDirectory.file("central-bundle/${bundleName}.zip").get().asFile
+    if (!zip.exists()) {
+        throw new GradleException("找不到 bundle: ${zip}")
+    }
+    def user = project.findProperty("mavenCentralUsername") ?: System.getenv("MAVEN_CENTRAL_USERNAME")
+    def pass = project.findProperty("mavenCentralPassword") ?: System.getenv("MAVEN_CENTRAL_PASSWORD")
+    if (!user || !pass) {
+        throw new GradleException("请设置 mavenCentralUsername 和 mavenCentralPassword（Central 用户令牌，不是登录密码）。")
+    }
+    def token = "${user}:${pass}".getBytes("UTF-8").encodeBase64().toString()
+    def publishingType = automatic ? "AUTOMATIC" : "USER_MANAGED"
+    def url = "https://central.sonatype.com/api/v1/publisher/upload?name=${URLEncoder.encode(componentName, 'UTF-8')}&publishingType=${publishingType}"
+    def proc = [
+            "curl", "--fail", "--show-error", "--silent", "--request", "POST",
+            "--header", "Authorization: Bearer ${token}",
+            "--form", "bundle=@${zip.absolutePath}",
+            url
+    ].execute()
+    def out = new StringBuilder()
+    def err = new StringBuilder()
+    proc.consumeProcessOutput(out, err)
+    if (proc.waitFor() != 0) {
+        throw new GradleException("上传 Central 失败 (exit ${proc.exitValue()}):\n${err}\n${out}")
+    }
+    def deploymentId = out.toString().trim()
+    logger.lifecycle("已上传，deploymentId=${deploymentId}")
+    logger.lifecycle("查看状态: https://central.sonatype.com/publishing/deployments")
+}
+
+tasks.register("publishToMavenCentral") {
+    group = "publishing"
+    description = "Upload the DopaDroid gradle-core bundle to Maven Central, then publish it manually in the portal."
+    dependsOn "stageMavenCentralBundle"
+    doLast { uploadBundle(false) }
+}
+
+tasks.register("publishAndReleaseToMavenCentral") {
+    group = "publishing"
+    description = "Upload the DopaDroid gradle-core bundle and automatically publish after validation."
+    dependsOn "stageMavenCentralBundle"
+    doLast { uploadBundle(true) }
+}

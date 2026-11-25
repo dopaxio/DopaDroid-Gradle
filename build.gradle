@@ -283,8 +283,8 @@ protobuf {
 group = 'dev.dopadroid.tools.build'
 version = rootProject.ext.buildVersion
 
-project.ext.pomName = 'Gradle Plug-in for Android'
-project.ext.pomDesc = 'Gradle plug-in to build Android applications.'
+project.ext.pomName = 'DopaDroid Gradle Plugin'
+project.ext.pomDesc = 'DopaDroid Gradle Plugin, an enhanced Android Gradle Plugin for building Android applications, with added support for reassembling Smali files.'
 project.ext.customArtifactId = 'gradle'
 
 publishing.publications.withType(MavenPublication).configureEach {
@@ -313,6 +313,8 @@ tasks.matching { it.name.startsWith("publish") }.configureEach {
         }
     }
 }
+
+apply from: "maven-central.gradle"
 test {
     environment("CUSTOM_REPO",
             new File(rootProject.ext.androidHostOut, "repo").toString()

@@ -1,0 +1,98 @@
+/*
+ * Copyright (C) 2020 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+@file:JvmName("FakeServices")
+
+package com.android.build.gradle.internal.services
+
+import com.android.build.gradle.internal.SdkComponentsBuildService
+import com.android.build.gradle.internal.errors.DeprecationReporter
+import com.android.build.gradle.internal.errors.SyncIssueReporter
+import com.android.build.gradle.internal.fixtures.FakeDeprecationReporter
+import com.android.build.gradle.internal.fixtures.FakeGradleProvider
+import com.android.build.gradle.internal.fixtures.FakeLogger
+import com.android.build.gradle.internal.fixtures.FakeSyncIssueReporter
+import com.android.build.gradle.internal.fixtures.ProjectFactory
+import com.android.build.gradle.internal.lint.LintFromMaven
+import com.android.build.gradle.internal.res.Aapt2FromMaven
+import com.android.build.gradle.internal.scope.ProjectInfo
+import com.android.build.gradle.options.ProjectOptions
+import com.android.builder.model.v2.ide.ProjectType
+import com.android.testutils.TestUtils
+import java.io.File
+import org.gradle.api.Project
+import org.gradle.api.logging.Logger
+import org.gradle.api.model.ObjectFactory
+import org.gradle.api.provider.Provider
+import org.gradle.api.provider.ProviderFactory
+
+@JvmOverloads
+fun createProjectServices(
+  project: Project = ProjectFactory.project,
+  issueReporter: SyncIssueReporter = FakeSyncIssueReporter(),
+  deprecationReporter: DeprecationReporter = FakeDeprecationReporter(),
+  objectFactory: ObjectFactory = project.objects,
+  logger: Logger = FakeLogger(),
+  providerFactory: ProviderFactory = project.providers,
+  projectOptions: ProjectOptions = ProjectOptions(providerFactory),
+  fileResolver: (Any) -> File = { File(it.toString()) },
+): ProjectServices =
+  ProjectServices(
+    issueReporter,
+    deprecationReporter,
+    objectFactory,
+    logger,
+    providerFactory,
+    project.layout,
+    projectOptions,
+    project.gradle.sharedServices,
+    lintFromMaven = LintFromMaven(objectFactory.fileCollection()),
+    aapt2FromMaven = Aapt2FromMaven(objectFactory.fileCollection().from(TestUtils.getAapt2().parent), "test-aapt2"),
+    maxWorkerCount = 1,
+    ProjectInfo(project),
+    fileResolver = fileResolver,
+    project.configurations,
+    project.dependencies,
+    project.extensions.extraProperties,
+    project.tasks::register,
+    project.pluginManager,
+    r8FromMaven =
+      com.android.build.gradle.internal.r8.R8FromMaven(
+        objectFactory.fileCollection(),
+        com.android.builder.dexing.R8Version.VERSION_AGP_WAS_SHIPPED_WITH,
+      ),
+  )
+
+@JvmOverloads
+fun createDslServices(
+  projectServices: ProjectServices = createProjectServices(),
+  sdkComponents: Provider<SdkComponentsBuildService> = FakeGradleProvider(null),
+  projectType: ProjectType? = null,
+): DslServices {
+  return DslServicesImpl(projectServices, sdkComponents, projectType)
+}
+
+@JvmOverloads
+fun createVariantApiServices(projectServices: ProjectServices = createProjectServices()): VariantBuilderServices =
+  VariantBuilderServicesImpl(projectServices)
+
+@JvmOverloads
+fun createVariantPropertiesApiServices(projectServices: ProjectServices = createProjectServices()): VariantServices =
+  VariantServicesImpl(projectServices = projectServices, forUnitTesting = true)
+
+@JvmOverloads
+fun createTaskCreationServices(projectServices: ProjectServices = createProjectServices()): TaskCreationServices =
+  TaskCreationServicesImpl(projectServices)
