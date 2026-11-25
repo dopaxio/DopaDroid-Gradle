@@ -23,8 +23,5 @@ public class DopaDroidApplicationPlugin implements Plugin<Project> {
         project.getLogger().lifecycle("only  DOPADROID PLUGIN APPLIED from " + getClass().getName());
         project.getLogger().info("DopaDroidApplicationPlugin apply...");
         project.getPluginManager().apply("com.android.internal.application");
-
-
-
     }
 }

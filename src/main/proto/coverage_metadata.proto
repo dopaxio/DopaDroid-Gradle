@@ -16,6 +16,9 @@
 
 syntax = "proto3";
 
+
+
+
 package android.tools.coverage.proto;
 
 option java_package = "com.android.tools.coverage.proto";
